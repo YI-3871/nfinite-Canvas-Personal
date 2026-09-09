@@ -1,0 +1,52 @@
+# Secrets and machine-local API configuration
+API/.env
+.env
+.env.*
+*.pem
+*.key
+
+# Generated images, uploads, and user-owned assets
+assets/
+output/
+history.json
+global_config.json
+
+# Runtime canvas data and previews
+data/canvases/
+data/conversations/
+data/media_previews/
+data/task_logs*
+data/*.db
+data/*.db-*
+
+# Local user settings generated at runtime
+data/prompt_libraries.json
+data/api_providers.json
+data/runninghub_workflows.json
+data/shared_folders.json
+data/storage_settings.json
+data/asset_classification_prompt.txt
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.pid
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+

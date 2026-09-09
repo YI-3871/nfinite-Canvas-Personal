@@ -1,0 +1,14 @@
+{
+  "version": "2026.07.17",
+  "updated_at": "2026-07-17T21:50:36+08:00",
+  "items": [
+    {
+      "type": "feature",
+      "text": "修复exellome和FHL的编辑功能报错bug"
+    },
+    {
+      "type": "feature",
+      "text": "修复mac系统缩放bug"
+    }
+  ]
+}
