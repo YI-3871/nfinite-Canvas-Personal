@@ -2519,7 +2519,7 @@ function addGeneratorNode(point){
     const p = point || defaultPoint(120, 0);
     const providerId = imageApiProviders()[0]?.id || '';
     const model = allImageModels(providerId)[0] || '';
-    return addNode({id:uid('gen'), type:'generator', x:p.x, y:p.y, apiProvider:providerId, model, ratio:'square', resolution:defaultApiImageResolution(model), customRatio:'', customSize:'', customRatioWidth:'', customRatioHeight:'', customWidth:'', customHeight:'', inputs:[]});
+    return addNode({id:uid('gen'), type:'generator', x:p.x, y:p.y, apiProvider:providerId, model, ratio:'square', resolution:defaultApiImageResolution(model), customRatio:'', customSize:'', customRatioWidth:'', customRatioHeight:'', customWidth:'', customHeight:'', taskMode:'outfit_swap', colorPreservation:'off', inputs:[]});
 }
 function addMsGenNode(point){
     const p = point || defaultPoint(140, 0);
@@ -8242,6 +8242,18 @@ function renderGeneratorBody(node){
                     </div>
                 </div>
             </div>
+            <div class="gen-settings-row color-preservation-row" style="display:none">
+                <select class="select-lite task-mode-select" title="任务类型">
+                    <option value="outfit_swap">换装</option>
+                    <option value="pose_change">换姿势</option>
+                    <option value="scene_change">场景/光线</option>
+                </select>
+                <select class="select-lite color-preservation-select" title="Nano Banana 2 颜色保护">
+                    <option value="off">颜色保护：关闭</option>
+                    <option value="auto">颜色保护：自动</option>
+                    <option value="strict">颜色保护：严格</option>
+                </select>
+            </div>
             <div class="gen-settings-row custom-ratio-row" style="display:none">
                 <label class="field">
                     <div class="setting-title">${tr('canvas.ratioWidth')}</div>
@@ -8300,6 +8312,9 @@ function renderGeneratorBody(node){
     const ratioSelect = wrap.querySelector('.ratio');
     const resolutionSelect = wrap.querySelector('.resolution');
     const qualitySelect = wrap.querySelector('.quality-select');
+    const taskModeSelect = wrap.querySelector('.task-mode-select');
+    const colorPreservationSelect = wrap.querySelector('.color-preservation-select');
+    const colorPreservationRow = wrap.querySelector('.color-preservation-row');
     const customRatioRow = wrap.querySelector('.custom-ratio-row');
     const customSizeRow = wrap.querySelector('.custom-size-row');
     const customRatioWInput = wrap.querySelector('.custom-ratio-w-input');
@@ -8312,6 +8327,11 @@ function renderGeneratorBody(node){
         qualitySelect.disabled = false;
         if(!['auto','low','medium','high'].includes(String(node.quality || 'auto'))) node.quality = 'auto';
         qualitySelect.value = node.quality || 'auto';
+        node.taskMode = ['outfit_swap','pose_change','scene_change'].includes(node.taskMode) ? node.taskMode : 'outfit_swap';
+        node.colorPreservation = ['off','auto','strict'].includes(node.colorPreservation) ? node.colorPreservation : 'off';
+        taskModeSelect.value = node.taskMode;
+        colorPreservationSelect.value = node.colorPreservation;
+        colorPreservationRow.style.display = String(resolveImageModel(node.model) || '').toLowerCase().startsWith('gemini-3.1-flash-image') ? 'flex' : 'none';
     };
     const hydrateCustomParts = () => {
         if((!node.customRatioWidth || !node.customRatioHeight) && node.customRatio) {
@@ -8384,6 +8404,20 @@ function renderGeneratorBody(node){
     qualitySelect.onchange = e => {
         e.stopPropagation();
         node.quality = e.target.value;
+        scheduleSave();
+    };
+    [taskModeSelect, colorPreservationSelect].forEach(select => {
+        select.onmousedown = e => e.stopPropagation();
+        select.onclick = e => e.stopPropagation();
+    });
+    taskModeSelect.onchange = e => {
+        e.stopPropagation();
+        node.taskMode = e.target.value;
+        scheduleSave();
+    };
+    colorPreservationSelect.onchange = e => {
+        e.stopPropagation();
+        node.colorPreservation = e.target.value;
         scheduleSave();
     };
     ratioSelect.onmousedown = e => e.stopPropagation();
@@ -9919,7 +9953,12 @@ async function runRhModelNode(node, opts={}){
         provider_id:'runninghub',
         model,
         size:await generatorSizeForRun(node, refs),
-        reference_images:refs.slice(0, CANVAS_REFERENCE_IMAGE_MAX)
+        reference_images:refs.slice(0, CANVAS_REFERENCE_IMAGE_MAX),
+        task_mode:node.taskMode || 'outfit_swap',
+        color_preservation:node.colorPreservation || 'off',
+        source:'canvas',
+        canvas_id:canvas?.id || '',
+        node_id:node.id || ''
     };
     const quality = normalizedImageQuality(node.quality);
     if(quality) payload.quality = quality;
@@ -9936,7 +9975,7 @@ async function runRhModelNode(node, opts={}){
             let outputs = [];
             for(const task of taskInfos){
                 const result = await waitCanvasImageTaskResult(task.task_id, {cascadeTargetId});
-                outputs.push(...(result.images || []));
+                outputs.push(...resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || [])));
                 run.request = requestMetaFromResult(result);
             }
             if(!outputs.length) throw new Error(tr('canvas.generationFailed'));
@@ -9954,6 +9993,7 @@ async function runRhModelNode(node, opts={}){
             ...(out._pending || []),
             ...taskInfos.map((task, index) => makePendingForRun(pendingIds[index], run, node, {refs, requestSize:payload.size, cascadeTargetId}, {
                 canvasTaskId:task.task_id,
+                traceId:task.trace_id || '',
                 canvasTaskType:'online-image',
                 providerId:payload.provider_id,
                 model:payload.model,
@@ -10429,7 +10469,12 @@ async function runGenerator(genId, opts={}){
         provider_id:resolveImageProviderId(gen.apiProvider || 'comfly'),
         model:resolveImageModel(gen.model),
         size:await generatorSizeForRun(gen, refs),
-        reference_images:refs.slice(0, CANVAS_REFERENCE_IMAGE_MAX)
+        reference_images:refs.slice(0, CANVAS_REFERENCE_IMAGE_MAX),
+        task_mode:gen.taskMode || 'outfit_swap',
+        color_preservation:gen.colorPreservation || 'off',
+        source:'canvas',
+        canvas_id:canvas?.id || '',
+        node_id:gen.id || ''
     };
     const quality = normalizedImageQuality(gen.quality);
     if(quality) payload.quality = quality;
@@ -10447,7 +10492,7 @@ async function runGenerator(genId, opts={}){
             let outputs = [];
             for(const task of taskInfos){
                 const result = await waitCanvasImageTaskResult(task.task_id, {cascadeTargetId});
-                outputs.push(...(result.images || []));
+                outputs.push(...resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || [])));
                 run.request = requestMetaFromResult(result);
             }
             if(!outputs.length) throw new Error(tr('canvas.generationFailed'));
@@ -10465,6 +10510,7 @@ async function runGenerator(genId, opts={}){
             ...(out._pending || []),
             ...taskInfos.map((task, index) => makePendingForRun(pendingIds[index], run, gen, {refs, requestSize:payload.size, cascadeTargetId}, {
                 canvasTaskId:task.task_id,
+                traceId:task.trace_id || '',
                 canvasTaskType:'online-image',
                 providerId:payload.provider_id,
                 model:payload.model,
@@ -10525,7 +10571,12 @@ async function runGeneratorLegacy(genId, opts={}){
             provider_id:resolveImageProviderId(gen.apiProvider || 'comfly'),
             model:resolveImageModel(gen.model),
             size:requestSize,
-            reference_images:refs.slice(0, CANVAS_REFERENCE_IMAGE_MAX)
+            reference_images:refs.slice(0, CANVAS_REFERENCE_IMAGE_MAX),
+            task_mode:gen.taskMode || 'outfit_swap',
+            color_preservation:gen.colorPreservation || 'off',
+            source:'canvas',
+            canvas_id:canvas?.id || '',
+            node_id:gen.id || ''
         };
         const quality = normalizedImageQuality(gen.quality);
         if(quality) payload.quality = quality;
@@ -10534,7 +10585,7 @@ async function runGeneratorLegacy(genId, opts={}){
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify(payload)
         }).then(async r => { if(!r.ok) throw new Error(await responseErrorMessage(r, tr('canvas.generationFailed'))); return r.json(); })));
-        const images = results.flatMap(result => result.images || []);
+        const images = results.flatMap(result => resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || [])));
         const metas = collectRunMetas(out, pendingIds);
         run.request = results[0] ? requestMetaFromResult(results[0]) : {};
         if(out) out._pending = (out._pending||[]).filter(p => !pendingIds.includes(p.id));
@@ -10682,13 +10733,13 @@ function resultMediaUrls(result){
         if(typeof value === 'object'){
             if(value.url || value.path || value.src || value.uri){
                 const url = value.url || value.path || value.src || value.uri;
-                if(url) urls.push({url, kind:value.kind || value.type || value.mediaKind || '', name:value.name || value.filename || ''});
+                if(url) urls.push({...value, url, kind:value.kind || value.type || value.mediaKind || '', name:value.name || value.filename || ''});
             }
-            ['outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
+            ['image_items','media_items','items','outputs','videos','images','urls','data','result'].forEach(key => add(value[key]));
             ['url','path','src','uri','output','output_url','outputUrl','video','video_url','videoUrl','mp4_url','mp4Url','download_url','downloadUrl','preview_url','previewUrl'].forEach(key => add(value[key]));
         }
     };
-    ['items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
+    ['image_items','media_items','items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
     const seen = new Set();
     return urls.map(item => {
         const url = outputUrlValue(item);
@@ -12043,6 +12094,9 @@ function runTaskLabel(run){
     return run?.nodeType || 'Generate';
 }
 function requestMetaFromResult(result={}){
+    const colorPreservation = Array.isArray(result.color_preservation)
+        ? (result.color_preservation[0] || {})
+        : (result.color_preservation || {});
     return {
         task_id: result.task_id || result.raw?.task_id || result.raw?.data?.task_id || (Array.isArray(result.raw?.data) ? result.raw.data[0]?.task_id : '') || '',
         request_id: result.request_id || result.id || result.raw?.id || '',
@@ -12051,6 +12105,10 @@ function requestMetaFromResult(result={}){
         prompt_id: result.prompt_id || '',
         workflow_json: result.workflow_json || '',
         seed: result.seed || '',
+        trace_id: result.trace_id || '',
+        task_mode: result.params?.task_mode || '',
+        color_preservation: colorPreservation,
+        raw_images: Array.isArray(result.raw_images) ? result.raw_images : [],
     };
 }
 function runPlatformLabel(run){
@@ -12082,6 +12140,8 @@ function addGenerationLog({run, outputs=[], runMs=0, error=''}) {
     if(!canvas) return;
     canvas.logs = canvas.logs || [];
     if(!error && (outputs || []).some(item => outputUrlValue(item))) playGenerationCompleteSound();
+    const outputTrace = (outputs || []).find(item => item && typeof item === 'object' && item.trace_id)?.trace_id || '';
+    const outputColor = (outputs || []).find(item => item && typeof item === 'object' && item.color_preservation)?.color_preservation || null;
     const entry = {
         id:uid('log'),
         createdAt:Date.now(),
@@ -12089,20 +12149,20 @@ function addGenerationLog({run, outputs=[], runMs=0, error=''}) {
         platform:runPlatformLabel(run),
         nodeType:run?.nodeType || '',
         model:run?.taskLabel || runTaskLabel(run),
-        request:run?.request || {},
+        request:{...(run?.request || {}), ...(outputTrace ? {trace_id:outputTrace} : {}), ...(outputColor ? {color_preservation:outputColor} : {})},
         prompt:run?.prompt || '',
         outputs:(outputs || []).filter(Boolean),
         refs:run?.refs || [],
         runMs:Number(runMs || 0),
         error:error ? String(error) : '',
     };
-    canvas.logs = [entry, ...canvas.logs].slice(0, 500);
+    canvas.logs = [entry, ...canvas.logs].slice(0, 100);
 }
 function renderCanvasLog(){
     const list = document.getElementById('logList') || (typeof logList !== 'undefined' ? logList : null);
     const logs = (typeof canvas !== 'undefined' && Array.isArray(canvas?.logs)) ? canvas.logs : [];
     if(!list) return;
-    list.innerHTML = logs.length ? logs.map(log => {
+    const rowsHtml = logs.length ? logs.map(log => {
         const thumbs = (log.outputs || []).slice(0, 8).map(item => {
             const url = outputUrlValue(item);
             if(!url) return '';
@@ -12120,11 +12180,14 @@ function renderCanvasLog(){
         const taskLabel = logTaskLabel(log);
         const idText = taskId || requestId || '';
         const backendText = workflow || backend || '';
+        const traceId = window.CanvasTaskLogUI?.traceId(log, log.outputs || []) || '';
+        const colorSummary = window.CanvasTaskLogUI?.colorSummary(log, log.outputs || []) || '';
         const subParts = [
             date,
             `${langIsEn() ? 'outputs' : '输出'} ${(log.outputs || []).length}`,
             idText ? `ID ${idText}` : '',
             backendText,
+            colorSummary,
         ].filter(Boolean);
         return `<div class="log-item ${log.status === 'failed' ? 'failed' : ''}">
             <div class="log-main">
@@ -12133,6 +12196,7 @@ function renderCanvasLog(){
                     <span class="log-chip">${escapeHtml(log.platform || '-')}</span>
                     ${taskLabel ? `<span class="log-chip">${escapeHtml(taskLabel)}</span>` : ''}
                     <span class="log-chip">${escapeHtml(formatRunDuration(log.runMs || 0))}</span>
+                    ${window.CanvasTaskLogUI?.detailButton(traceId) || ''}
                 </div>
                 <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
                 ${log.error ? `<div class="log-error" title="${escapeAttr(log.error)}" data-error="${escapeAttr(log.error)}">${escapeHtml(log.error)}</div>` : ''}
@@ -12141,6 +12205,7 @@ function renderCanvasLog(){
             <div class="log-thumbs">${thumbs}</div>
         </div>`;
     }).join('') : `<div class="log-empty">${tr('canvas.noLogs')}</div>`;
+    list.innerHTML = `${window.CanvasTaskLogUI?.toolbarHtml() || ''}${rowsHtml}`;
     bindCanvasPreviewImageFallbacks(list);
     list.querySelectorAll('[data-url]').forEach(el => {
         el.onclick = e => {
@@ -12166,6 +12231,8 @@ function renderCanvasLog(){
     };
     bindCanvasLogCopy('[data-prompt]', 'prompt');
     bindCanvasLogCopy('[data-error]', 'error');
+    window.CanvasTaskLogUI?.bindDetails(list);
+    window.CanvasTaskLogUI?.refreshStorage(list, canvas?.id || '');
     refreshIcons();
 }
 async function importWorkflowAssetUrl(url, name='workflow'){
@@ -12311,7 +12378,7 @@ function providerIdForPending(pending){
 }
 function completeRecoverPendingOutput(out, pending, result){
     if(!out || !pending || !result) return;
-    const images = result.images || [];
+    const images = resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || []));
     if(!images.length) return;
     const meta = {
         runMs: nowMs() - Number(pending.startedAt || nowMs()),
@@ -12435,7 +12502,7 @@ function completeCanvasImageTask(taskId, result){
         run: pending.run || {},
     };
     meta.run.request = requestMetaFromResult(result);
-    const images = result.images || [];
+    const images = resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || []));
     out._pending = (out._pending || []).filter(p => p.id !== pending.id);
     appendOutputImages(out, images, meta.run?.refs?.[0], [meta]);
     const gen = nodes.find(n => n.id === meta.run?.node?.id);
@@ -12454,6 +12521,8 @@ function failCanvasImageTask(taskId, message, taskData={}){
     if(!found) return;
     const {out, pending} = found;
     const run = pending.run || {};
+    const traceId = taskData?.trace_id || pending.traceId || '';
+    if(traceId) run.request = {...(run.request || {}), trace_id:traceId};
     const runMs = nowMs() - Number(pending.startedAt || nowMs());
     const recoverTaskId = taskData?.upstream_task_id || taskData?.task_id || extractUpstreamTaskId(message);
     const gen = nodes.find(n => n.id === run?.node?.id);
@@ -12563,6 +12632,9 @@ function appendOutputImages(out, images, compareRef, metas=[], layout=null){
         const item = {url:outputUrlValue(url), viewed:false, runMs:meta.runMs || 0, run:meta.run || null};
         if(source.name) item.name = source.name;
         if(source.kind || source.mediaKind) item.kind = source.kind || source.mediaKind;
+        ['natural_w','natural_h','width','height','raw_url','corrected_url','color_preservation','trace_id'].forEach(key => {
+            if(source[key] !== undefined) item[key] = source[key];
+        });
         if(meta.kind) item.kind = meta.kind;
         if(meta.grid) item.grid = meta.grid;
         return item;

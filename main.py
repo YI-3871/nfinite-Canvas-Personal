@@ -27,11 +27,21 @@ import shlex
 import functools
 import html
 import xml.etree.ElementTree as ET
+from contextvars import ContextVar
 from typing import List, Dict, Any, Optional, Tuple
 from threading import Lock, Thread
 import httpx
 from PIL import Image, ImageOps
 from io import BytesIO
+
+# The bundled Windows Python runs in isolated mode and does not add the script
+# directory to sys.path. Keep local application modules importable in that build.
+APP_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_MODULE_DIR not in sys.path:
+    sys.path.insert(0, APP_MODULE_DIR)
+
+from color_preservation import preserve_image_colors
+from task_log_store import TaskLogStore, sanitize_log_value
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -52,15 +62,29 @@ class QuietAccessLogFilter(logging.Filter):
     def filter(self, record):
         args = record.args if isinstance(record.args, tuple) else ()
         if len(args) >= 3:
+            method = str(args[1]).upper() if len(args) >= 2 else ""
             path = str(args[2]).split("?", 1)[0]
             status = int(args[4]) if len(args) >= 5 and str(args[4]).isdigit() else 0
             quiet_dynamic = any(path.startswith(prefix) and path.endswith("/meta") for prefix in QUIET_ACCESS_PREFIXES)
-            if (path in QUIET_ACCESS_PATHS or quiet_dynamic) and status < 400:
+            quiet_canvas_save = method == "PUT" and re.fullmatch(r"/api/canvases/[^/]+", path)
+            quiet_task_poll = method == "GET" and (
+                path.startswith("/api/canvas-image-tasks/") or path.startswith("/api/canvas-comfy-tasks/")
+            )
+            quiet_preview = method == "GET" and (
+                path.startswith("/api/media-preview") or path.startswith("/assets/input/") or path.startswith("/assets/output/")
+            )
+            if (path in QUIET_ACCESS_PATHS or quiet_dynamic or quiet_canvas_save or quiet_task_poll or quiet_preview) and status < 400:
                 return False
         message = record.getMessage()
         if any(f'"GET {path}' in message and '" 200' in message for path in QUIET_ACCESS_PATHS):
             return False
         if 'GET /api/canvases/' in message and '/meta' in message and '" 200' in message:
+            return False
+        if re.search(r'"PUT /api/canvases/[^/ ?]+(?:\?[^ ]*)? HTTP/[^\"]+" (?:2\d\d|304)', message):
+            return False
+        if re.search(r'"GET /api/canvas-(?:image|comfy)-tasks/[^ ]+ HTTP/[^\"]+" (?:2\d\d|304)', message):
+            return False
+        if re.search(r'"GET /(?:api/media-preview|assets/(?:input|output))/[^ ]+ HTTP/[^\"]+" (?:2\d\d|304)', message):
             return False
         return True
 
@@ -162,7 +186,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 GLOBAL_LOOP = None
-APP_VERSION = "2026.06.03"
+APP_VERSION = "2026.09.09"
 GITHUB_REPO_URL = "https://github.com/hero8152/Infinite-Canvas"
 GITHUB_VERSION_URL = "https://raw.githubusercontent.com/hero8152/Infinite-Canvas/main/VERSION"
 GITHUB_TREE_URL = "https://api.github.com/repos/hero8152/Infinite-Canvas/git/trees/main?recursive=1"
@@ -295,6 +319,9 @@ def apply_storage_settings(dirs=None):
     LOCAL_UPLOAD_DIR = dirs.get("local") or LOCAL_UPLOAD_DIR
 
 apply_storage_settings()
+
+TASK_LOG_STORE = TaskLogStore(os.path.join(DATA_DIR, "task_logs.sqlite3"))
+CURRENT_TASK_TRACE = ContextVar("current_canvas_task_trace", default="")
 
 QUEUE = []
 QUEUE_LOCK = Lock()
@@ -2505,13 +2532,42 @@ class OnlineImageRequest(BaseModel):
     quality: str = "auto"
     n: int = 1
     reference_images: List[AIReference] = []
+    task_mode: str = "outfit_swap"
+    color_preservation: str = "off"
+    color_reference_url: str = ""
+    source: str = "canvas"
+    canvas_id: str = ""
+    node_id: str = ""
 
 class ImageTaskQueryRequest(BaseModel):
     provider_id: str = "comfly"
     task_id: str = Field(min_length=1, max_length=240)
 
+class TaskLogReminderRequest(BaseModel):
+    action: str = "dismiss"
+
 CANVAS_TASKS: Dict[str, Dict[str, Any]] = {}
 CANVAS_TASK_LOCK = Lock()
+CANVAS_TASK_COMPLETED_LIMIT = 200
+CANVAS_TASK_RETENTION_SECONDS = 24 * 60 * 60
+
+def prune_canvas_tasks_locked(now: Optional[float] = None):
+    """Keep active work, but bound completed task results retained in RAM."""
+    now = float(now or time.time())
+    terminal = {"succeeded", "failed", "cancelled"}
+    expired = [
+        task_id for task_id, item in CANVAS_TASKS.items()
+        if item.get("status") in terminal and now - float(item.get("updated_at") or item.get("created_at") or now) > CANVAS_TASK_RETENTION_SECONDS
+    ]
+    for task_id in expired:
+        CANVAS_TASKS.pop(task_id, None)
+    completed = sorted(
+        ((task_id, item) for task_id, item in CANVAS_TASKS.items() if item.get("status") in terminal),
+        key=lambda pair: float(pair[1].get("updated_at") or pair[1].get("created_at") or 0),
+        reverse=True,
+    )
+    for task_id, _item in completed[CANVAS_TASK_COMPLETED_LIMIT:]:
+        CANVAS_TASKS.pop(task_id, None)
 
 class CanvasVideoRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
@@ -9286,11 +9342,45 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
             "imageConfig": gemini_image_config(size),
         },
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
-        response = await client.post(endpoint, headers=api_headers(provider=provider), json=body)
-        response.raise_for_status()
-        raw = response.json()
-        return extract_image(raw), raw
+    headers = api_headers(provider=provider)
+    trace_id = CURRENT_TASK_TRACE.get()
+    started = time.perf_counter()
+    if trace_id:
+        TASK_LOG_STORE.event(
+            trace_id, "provider_request", "正在请求 Gemini 图像接口",
+            data={
+                "method": "POST", "endpoint": endpoint, "headers": headers, "body": body,
+                "timeout_seconds": {"connect": 20, "read": 1800, "write": 120},
+            },
+        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+            response = await client.post(endpoint, headers=headers, json=body)
+            elapsed_ms = round((time.perf_counter() - started) * 1000)
+            if trace_id:
+                TASK_LOG_STORE.event(
+                    trace_id, "provider_response", "Gemini 接口已响应",
+                    level="error" if response.status_code >= 400 else "info",
+                    data={
+                        "status_code": response.status_code,
+                        "duration_ms": elapsed_ms,
+                        "request_id": response.headers.get("x-request-id") or response.headers.get("x-goog-request-id") or "",
+                        "content_type": response.headers.get("content-type") or "",
+                        "content_length": response.headers.get("content-length") or "",
+                        "error_body": response.text[:4000] if response.status_code >= 400 else "",
+                    },
+                    fields={"duration_ms": elapsed_ms},
+                )
+            response.raise_for_status()
+            raw = response.json()
+            return extract_image(raw), raw
+    except Exception as exc:
+        if trace_id:
+            TASK_LOG_STORE.event(
+                trace_id, "provider_error", "Gemini 请求异常",
+                level="error", data={"type": type(exc).__name__, "message": str(exc)},
+            )
+        raise
 
 def volcengine_endpoint_url(provider):
     return provider_endpoint_url(provider, "image_generation_endpoint", "/api/v3/images/generations")
@@ -10485,8 +10575,53 @@ async def generate_runninghub_video(payload, provider):
         local_urls = [await save_remote_video_to_output(url, prefix="rh_video_") for url in urls]
         return {"videos": local_urls, "task_id": task_id, "raw": result}
 
+def api_reference_log_meta(ref):
+    item = {
+        "url": str((ref or {}).get("url") or ""),
+        "name": str((ref or {}).get("name") or "")[:240],
+        "role": str((ref or {}).get("role") or "")[:80],
+        "kind": str((ref or {}).get("kind") or "")[:40],
+        "mime": str((ref or {}).get("mime") or "")[:120],
+    }
+    path = output_file_from_url(item["url"])
+    if not path or not os.path.isfile(path):
+        item["location"] = "remote" if item["url"].startswith(("http://", "https://")) else "unresolved"
+        return item
+    item["location"] = "local"
+    try:
+        stat = os.stat(path)
+        item.update({"bytes": stat.st_size, "modified_at": stat.st_mtime})
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        item["sha256"] = digest.hexdigest()
+        with Image.open(path) as image:
+            item.update({"width": image.width, "height": image.height, "format": image.format or ""})
+    except Exception as exc:
+        item["metadata_error"] = str(exc)[:240]
+    return item
+
+
 async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id="comfly"):
     provider = get_api_provider(provider_id)
+    trace_id = CURRENT_TASK_TRACE.get()
+    if trace_id:
+        TASK_LOG_STORE.event(
+            trace_id, "provider_prepare", "已解析图像 API 请求",
+            status="running",
+            data={
+                "provider_id": provider.get("id") or provider_id,
+                "provider_name": provider.get("name") or provider_id,
+                "protocol": effective_protocol(provider, model),
+                "request_mode": effective_image_request_mode(provider, model),
+                "base_url": provider.get("base_url") or "",
+                "model": model,
+                "size": size,
+                "quality": quality,
+                "reference_images": [api_reference_log_meta(ref) for ref in (reference_images or [])],
+            },
+        )
     if provider["id"] == "modelscope":
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
     if is_codex_provider(provider):
@@ -11108,11 +11243,6 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
     doc_exts = {".pdf", ".txt", ".md", ".markdown", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".json", ".zip", ".yaml", ".yml", ".log"}
     max_upload_bytes = 50 * 1024 * 1024
     for file in files:
-        content = await file.read()
-        if not content:
-            continue
-        if len(content) > max_upload_bytes:
-            raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过 50MB，无法上传")
         ext = os.path.splitext(file.filename or "")[1].lower()
         content_type = (file.content_type or "").lower()
         kind = "image"
@@ -11138,8 +11268,32 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
                 ext = ".bin"
         filename = f"ai_ref_{uuid.uuid4().hex[:12]}{ext}"
         path = output_path_for(filename, "input")
-        with open(path, "wb") as f:
-            f.write(content)
+        total = 0
+        try:
+            with open(path, "wb") as f:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_upload_bytes:
+                        raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过 50MB，无法上传")
+                    f.write(chunk)
+        except Exception:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+            if total > max_upload_bytes:
+                logging.warning("AI reference upload rejected with 413: name=%s bytes>%s", file.filename or "file", max_upload_bytes)
+            raise
+        if total <= 0:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
         uploaded.append({"url": output_url_for(filename, "input"), "name": file.filename or filename, "kind": kind, "mime": content_type})
     return {"files": uploaded}
 
@@ -13206,13 +13360,29 @@ async def fetch_upstream_models(provider_id: str):
     return await fetch_models_from_upstream(provider.get("base_url") or "", api_key, provider_protocol(provider), provider.get("image_request_mode") or "openai")
 
 async def build_online_image_result(payload: OnlineImageRequest):
+    trace_id = CURRENT_TASK_TRACE.get()
     provider = get_api_provider(payload.provider_id)
     default_model = (provider.get("image_models") or [IMAGE_MODEL])[0]
     model = selected_model(payload.model, default_model)
     request_size = snap_size_to_multiple(payload.size, 16)
     refs = [ref.dict() for ref in payload.reference_images if ref.url]
     image_refs = image_references(refs)
+    task_mode = str(payload.task_mode or "outfit_swap").strip().lower()
+    if task_mode not in {"outfit_swap", "pose_change", "scene_change"}:
+        task_mode = "outfit_swap"
+    color_mode = str(payload.color_preservation or "off").strip().lower()
+    if color_mode not in {"off", "auto", "strict"}:
+        color_mode = "off"
+    color_supported = str(model or "").strip().lower().startswith("gemini-3.1-flash-image")
+    preferred_reference_roles = {"base", "original", "source", "person", "input"}
+    color_reference_url = str(payload.color_reference_url or "").strip()
+    if not color_reference_url:
+        color_reference_url = next(
+            (str(ref.get("url") or "") for ref in image_refs if str(ref.get("role") or "").strip().lower() in preferred_reference_roles),
+            str((image_refs[0] if image_refs else {}).get("url") or ""),
+        )
     count = max(1, min(8, int(payload.n or 1)))
+
     async def generate_one():
         image_data, raw_item = await generate_ai_image(payload.prompt, request_size, payload.quality, model, image_refs, provider["id"])
         try:
@@ -13221,12 +13391,102 @@ async def build_online_image_result(payload: OnlineImageRequest):
             image_items = [image_data]
         local_urls = []
         local_items = []
+        raw_urls = []
+        color_diagnostics = []
         for item in image_items:
-            local_url = await save_ai_image_to_output(item, prefix="online_")
-            if local_url:
-                local_urls.append(local_url)
-                local_items.append(image_output_meta(local_url, item))
-        return local_urls, local_items, raw_item
+            raw_url = await save_ai_image_to_output(item, prefix="online_")
+            if not raw_url:
+                continue
+            raw_urls.append(raw_url)
+            if trace_id:
+                TASK_LOG_STORE.event(
+                    trace_id, "saving_output", "已保存 API 原始输出",
+                    data={"raw_output": api_reference_log_meta({"url": raw_url, "name": os.path.basename(raw_url)})},
+                )
+            output_url = raw_url
+            if color_mode == "off":
+                passthrough_reason = "color preservation is off"
+            elif not color_supported:
+                passthrough_reason = "color preservation is limited to Nano Banana 2"
+            else:
+                passthrough_reason = "color reference is unavailable"
+            public_diagnostics = {
+                "version": 1,
+                "strategy": "adaptive_hybrid_d",
+                "requested_mode": color_mode,
+                "task_mode": task_mode,
+                "supported_model": color_supported,
+                "status": "passthrough",
+                "method": "none",
+                "confidence": 0.0,
+                "reason": passthrough_reason,
+                "raw_url": raw_url,
+                "corrected_url": "",
+                "reference_url": color_reference_url,
+            }
+            raw_path = output_file_from_url(raw_url)
+            reference_path = output_file_from_url(color_reference_url)
+            if color_supported and color_mode != "off" and raw_path and reference_path:
+                stem, extension = os.path.splitext(os.path.basename(raw_path))
+                extension = extension.lower() if extension.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+                corrected_filename = f"{stem}_colorfix{extension}"
+                corrected_path = os.path.join(os.path.dirname(raw_path), corrected_filename)
+                try:
+                    if trace_id:
+                        TASK_LOG_STORE.event(
+                            trace_id, "color_protection", "正在执行 Nano Banana 2 颜色保护",
+                            data={"mode": color_mode, "task_mode": task_mode, "reference_url": color_reference_url, "raw_url": raw_url},
+                        )
+                    diagnostics = await asyncio.to_thread(
+                        preserve_image_colors,
+                        reference_path,
+                        raw_path,
+                        corrected_path,
+                        color_mode,
+                        task_mode,
+                    )
+                    public_diagnostics = {
+                        key: value for key, value in diagnostics.items()
+                        if key not in {"raw_path", "corrected_path"}
+                    }
+                    public_diagnostics.update({
+                        "supported_model": True,
+                        "raw_url": raw_url,
+                        "corrected_url": "",
+                        "reference_url": color_reference_url,
+                    })
+                    if diagnostics.get("status") == "corrected" and os.path.isfile(corrected_path):
+                        output_url = output_url_for(corrected_filename, "output")
+                        public_diagnostics["corrected_url"] = output_url
+                    if trace_id:
+                        TASK_LOG_STORE.event(
+                            trace_id, "color_protection", "颜色保护处理完成",
+                            data=public_diagnostics,
+                            fields={"color": public_diagnostics},
+                        )
+                except Exception as exc:
+                    logging.exception("Nano Banana 2 color preservation failed safely")
+                    public_diagnostics.update({
+                        "status": "passthrough",
+                        "method": "none",
+                        "reason": f"color correction failed safely: {str(exc)[:180]}",
+                    })
+                    if trace_id:
+                        TASK_LOG_STORE.event(
+                            trace_id, "color_protection", "颜色保护失败，已安全回退原始输出",
+                            level="error", data=public_diagnostics, fields={"color": public_diagnostics},
+                        )
+            output_meta = image_output_meta(output_url, item)
+            output_meta.update({
+                "raw_url": raw_url,
+                "color_preservation": public_diagnostics,
+                "trace_id": trace_id,
+            })
+            local_urls.append(output_url)
+            local_items.append(output_meta)
+            color_diagnostics.append(public_diagnostics)
+        return local_urls, local_items, raw_item, raw_urls, color_diagnostics
+
     try:
         generated = await asyncio.gather(*(generate_one() for _ in range(count)))
     except httpx.HTTPStatusError as exc:
@@ -13239,8 +13499,10 @@ async def build_online_image_result(payload: OnlineImageRequest):
         log_net_error(f"生图 网络/TLS错误 provider={provider.get('id')} model={model}", exc)
         raise HTTPException(status_code=502, detail=f"请求上游生图接口失败：{exc}") from exc
 
-    local_urls = [url for urls, _items, _raw in generated for url in (urls or []) if url]
-    local_items = [item for _urls, items, _raw in generated for item in (items or []) if item.get("url")]
+    local_urls = [url for urls, _items, _raw, _raw_urls, _diagnostics in generated for url in (urls or []) if url]
+    local_items = [item for _urls, items, _raw, _raw_urls, _diagnostics in generated for item in (items or []) if item.get("url")]
+    raw_urls = [url for _urls, _items, _raw, urls, _diagnostics in generated for url in (urls or []) if url]
+    color_diagnostics = [item for _urls, _items, _raw, _raw_urls, items in generated for item in (items or [])]
     raw = generated[0][2] if generated else {}
     if not local_urls:
         provider_name = provider.get("name") or provider["id"]
@@ -13249,6 +13511,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
     result = {
         "prompt": payload.prompt,
         "images": local_urls,
+        "raw_images": raw_urls,
         "image_items": local_items,
         "timestamp": time.time(),
         "type": "online",
@@ -13257,8 +13520,22 @@ async def build_online_image_result(payload: OnlineImageRequest):
         "provider_name": provider.get("name") or provider["id"],
         "task_id": extract_task_id(raw) if isinstance(raw, dict) else None,
         "request_id": raw.get("id") if isinstance(raw, dict) else None,
-        "params": {"provider_id": provider["id"], "model": model, "size": request_size, "requested_size": payload.size, "quality": payload.quality, "n": count, "reference_images": refs},
+        "params": {
+            "provider_id": provider["id"],
+            "model": model,
+            "size": request_size,
+            "requested_size": payload.size,
+            "quality": payload.quality,
+            "n": count,
+            "reference_images": refs,
+            "task_mode": task_mode,
+            "color_preservation": color_mode,
+            "color_reference_url": color_reference_url,
+            "source": str(payload.source or "canvas")[:40],
+        },
+        "color_preservation": color_diagnostics[0] if len(color_diagnostics) == 1 else color_diagnostics,
         "raw_usage": raw.get("usage") if isinstance(raw, dict) else None,
+        "trace_id": trace_id,
     }
     save_to_history(result)
     if GLOBAL_LOOP:
@@ -13267,7 +13544,49 @@ async def build_online_image_result(payload: OnlineImageRequest):
 
 @app.post("/api/online-image")
 async def online_image(payload: OnlineImageRequest):
-    return await build_online_image_result(payload)
+    trace_id = f"trace_{uuid.uuid4().hex}"
+    started = time.perf_counter()
+    TASK_LOG_STORE.create(
+        trace_id,
+        task_id="",
+        canvas_id=payload.canvas_id,
+        node_id=payload.node_id,
+        source=payload.source or "api",
+        kind="image",
+        provider_id=payload.provider_id,
+        model=payload.model,
+        status="running",
+        stage="accepted",
+        prompt=payload.prompt,
+        request={
+            "method": "POST", "route": "/api/online-image",
+            "parameters": payload.dict(exclude={"prompt", "reference_images"}),
+            "reference_images": [api_reference_log_meta(ref.dict()) for ref in payload.reference_images],
+        },
+    )
+    token = CURRENT_TASK_TRACE.set(trace_id)
+    try:
+        result = await build_online_image_result(payload)
+        result["trace_id"] = trace_id
+        TASK_LOG_STORE.finish(
+            trace_id, status="succeeded", response=result,
+            color=result.get("color_preservation") or {},
+            upstream_id=str(result.get("task_id") or result.get("request_id") or ""),
+            duration_ms=round((time.perf_counter() - started) * 1000),
+        )
+        return result
+    except Exception as exc:
+        TASK_LOG_STORE.finish(
+            trace_id, status="failed",
+            error={
+                "type": type(exc).__name__, "message": str(getattr(exc, "detail", None) or exc),
+                "status_code": getattr(exc, "status_code", 500), "traceback": traceback.format_exc(),
+            },
+            duration_ms=round((time.perf_counter() - started) * 1000),
+        )
+        raise
+    finally:
+        CURRENT_TASK_TRACE.reset(token)
 
 @app.post("/api/image-task-query")
 async def query_image_task(payload: ImageTaskQueryRequest):
@@ -13398,12 +13717,19 @@ async def query_image_task(payload: ImageTaskQueryRequest):
     }
 
 async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
+    started = time.perf_counter()
     with CANVAS_TASK_LOCK:
+        task_info = CANVAS_TASKS.get(task_id) or {}
+        trace_id = str(task_info.get("trace_id") or "")
         if task_id in CANVAS_TASKS:
             CANVAS_TASKS[task_id]["status"] = "running"
             CANVAS_TASKS[task_id]["updated_at"] = time.time()
+    token = CURRENT_TASK_TRACE.set(trace_id)
+    if trace_id:
+        TASK_LOG_STORE.event(trace_id, "running", "后台图像任务开始执行", status="running")
     try:
         result = await build_online_image_result(payload)
+        result["trace_id"] = trace_id
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({
                 "status": "succeeded",
@@ -13411,6 +13737,14 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
                 "error": "",
                 "updated_at": time.time(),
             })
+            prune_canvas_tasks_locked()
+        if trace_id:
+            TASK_LOG_STORE.finish(
+                trace_id, status="succeeded", response=result,
+                color=result.get("color_preservation") or {},
+                upstream_id=str(result.get("task_id") or result.get("request_id") or ""),
+                duration_ms=round((time.perf_counter() - started) * 1000),
+            )
     except JimengPendingError as exc:
         # 即梦云端还在排队：标记为 jimeng_pending，前端据 submit_id 持久续查（任务未丢失）
         info = jimeng_pending_payload(exc)
@@ -13425,6 +13759,13 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
                 "error": "",
                 "updated_at": time.time(),
             })
+            prune_canvas_tasks_locked()
+        if trace_id:
+            TASK_LOG_STORE.event(
+                trace_id, "upstream_pending", "上游任务仍在排队，可继续查询",
+                status="jimeng_pending", data=info,
+                fields={"upstream_id": exc.submit_id, "duration_ms": round((time.perf_counter() - started) * 1000)},
+            )
     except Exception as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         status_code = getattr(exc, "status_code", 500)
@@ -13437,11 +13778,43 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
                 "upstream_task_id": upstream_task_id,
                 "updated_at": time.time(),
             })
+            prune_canvas_tasks_locked()
+        if trace_id:
+            TASK_LOG_STORE.finish(
+                trace_id, status="failed", upstream_id=upstream_task_id,
+                error={
+                    "type": type(exc).__name__, "message": str(detail), "status_code": status_code,
+                    "upstream_task_id": upstream_task_id, "traceback": traceback.format_exc(),
+                },
+                duration_ms=round((time.perf_counter() - started) * 1000),
+            )
+    finally:
+        CURRENT_TASK_TRACE.reset(token)
 
 @app.post("/api/canvas-image-tasks")
 async def create_canvas_image_task(payload: OnlineImageRequest):
     task_id = f"canvas_img_{uuid.uuid4().hex}"
+    trace_id = f"trace_{uuid.uuid4().hex}"
+    TASK_LOG_STORE.create(
+        trace_id,
+        task_id=task_id,
+        canvas_id=payload.canvas_id,
+        node_id=payload.node_id,
+        source=payload.source or "canvas",
+        kind="image",
+        provider_id=payload.provider_id,
+        model=payload.model,
+        status="queued",
+        stage="queued",
+        prompt=payload.prompt,
+        request={
+            "method": "POST", "route": "/api/canvas-image-tasks",
+            "parameters": payload.dict(exclude={"prompt", "reference_images"}),
+            "reference_images": [api_reference_log_meta(ref.dict()) for ref in payload.reference_images],
+        },
+    )
     with CANVAS_TASK_LOCK:
+        prune_canvas_tasks_locked()
         CANVAS_TASKS[task_id] = {
             "id": task_id,
             "type": "online-image",
@@ -13452,17 +13825,53 @@ async def create_canvas_image_task(payload: OnlineImageRequest):
             "error": "",
             "provider_id": payload.provider_id,
             "model": payload.model,
+            "trace_id": trace_id,
+            "task_mode": payload.task_mode,
+            "color_preservation": payload.color_preservation,
         }
     asyncio.create_task(run_canvas_image_task(task_id, payload))
-    return {"task_id": task_id, "status": "queued"}
+    return {"task_id": task_id, "trace_id": trace_id, "status": "queued"}
 
 @app.get("/api/canvas-image-tasks/{task_id}")
 async def get_canvas_image_task(task_id: str):
     with CANVAS_TASK_LOCK:
+        prune_canvas_tasks_locked()
         task = dict(CANVAS_TASKS.get(task_id) or {})
     if not task:
         raise HTTPException(status_code=404, detail="画布任务不存在，可能服务已重启或任务已过期")
     return task
+
+@app.get("/api/task-logs/storage")
+async def task_log_storage_info():
+    return TASK_LOG_STORE.storage_info()
+
+@app.get("/api/task-logs")
+async def list_task_logs(canvas_id: str = "", status: str = "", provider_id: str = "",
+                         query: str = "", limit: int = 50, offset: int = 0):
+    return TASK_LOG_STORE.list(
+        canvas_id=canvas_id, status=status, provider_id=provider_id,
+        query=query, limit=limit, offset=offset,
+    )
+
+@app.get("/api/task-logs/{trace_id}")
+async def get_task_log(trace_id: str):
+    item = TASK_LOG_STORE.get(trace_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="API 请求日志不存在或已被清理")
+    return item
+
+@app.delete("/api/task-logs")
+async def clear_task_logs(scope: str = "all"):
+    normalized = "older_than_30d" if scope == "older_than_30d" else "all"
+    return TASK_LOG_STORE.cleanup(normalized)
+
+@app.post("/api/task-logs/reminder")
+async def task_log_cleanup_reminder(payload: TaskLogReminderRequest):
+    action = str(payload.action or "dismiss").strip().lower()
+    if action == "clean":
+        return {"action": action, **TASK_LOG_STORE.cleanup("all")}
+    TASK_LOG_STORE.mark_cleanup_prompt()
+    return {"action": "dismiss", **TASK_LOG_STORE.storage_info()}
 
 async def run_canvas_comfy_task(task_id: str, payload: GenerateRequest):
     with CANVAS_TASK_LOCK:
@@ -13480,6 +13889,7 @@ async def run_canvas_comfy_task(task_id: str, payload: GenerateRequest):
                 "error": "",
                 "updated_at": time.time(),
             })
+            prune_canvas_tasks_locked()
     except Exception as exc:
         detail = getattr(exc, "detail", None) or str(exc)
         status_code = getattr(exc, "status_code", 500)
@@ -13490,11 +13900,13 @@ async def run_canvas_comfy_task(task_id: str, payload: GenerateRequest):
                 "status_code": status_code,
                 "updated_at": time.time(),
             })
+            prune_canvas_tasks_locked()
 
 @app.post("/api/canvas-comfy-tasks")
 async def create_canvas_comfy_task(payload: GenerateRequest):
     task_id = f"canvas_comfy_{uuid.uuid4().hex}"
     with CANVAS_TASK_LOCK:
+        prune_canvas_tasks_locked()
         CANVAS_TASKS[task_id] = {
             "id": task_id,
             "type": "comfy",
@@ -13511,6 +13923,7 @@ async def create_canvas_comfy_task(payload: GenerateRequest):
 @app.get("/api/canvas-comfy-tasks/{task_id}")
 async def get_canvas_comfy_task(task_id: str):
     with CANVAS_TASK_LOCK:
+        prune_canvas_tasks_locked()
         task = dict(CANVAS_TASKS.get(task_id) or {})
     if not task:
         raise HTTPException(status_code=404, detail="ComfyUI 任务不存在，可能服务已重启或任务已过期")
@@ -13565,6 +13978,25 @@ def build_image_param_fields(engine: str, provider: dict, model: str):
             ],
             "default": "auto",
         })
+        if str(model or "").strip().lower().startswith("gemini-3.1-flash-image"):
+            fields.append({
+                "key": "task_mode", "type": "select", "label": "任务类型", "control": "chips",
+                "options": [
+                    {"value": "outfit_swap", "label": "换装"},
+                    {"value": "pose_change", "label": "换姿势"},
+                    {"value": "scene_change", "label": "场景/光线"},
+                ],
+                "default": "outfit_swap",
+            })
+            fields.append({
+                "key": "color_preservation", "type": "select", "label": "颜色保护", "control": "chips",
+                "options": [
+                    {"value": "off", "label": "关闭"},
+                    {"value": "auto", "label": "自动"},
+                    {"value": "strict", "label": "严格"},
+                ],
+                "default": "off",
+            })
     fields.append(count_field)
     fields.append(refs_field)
     return fields
@@ -15891,6 +16323,38 @@ async def batch_crop_asset_library_items(payload: AssetLibraryBatchCropRequest):
     save_asset_library(lib)
     return {"library": lib, "added": len(added), "items": added}
 
+def compact_canvas_log_entry(entry):
+    """Persist only a lightweight UI summary; detailed API traces live in SQLite."""
+    if not isinstance(entry, dict):
+        return {}
+    request = entry.get("request") if isinstance(entry.get("request"), dict) else {}
+    request_keys = {
+        "trace_id", "task_id", "taskId", "request_id", "requestId", "provider_id", "providerId",
+        "backend", "model", "size", "resolution", "quality", "n", "workflow_json", "workflow",
+        "task_mode", "color_preservation", "raw_images",
+    }
+    compact_request = {key: request.get(key) for key in request_keys if request.get(key) not in (None, "", [], {})}
+    outputs = []
+    for output in (entry.get("outputs") or [])[:8]:
+        if isinstance(output, str):
+            outputs.append(output)
+        elif isinstance(output, dict):
+            keep = {key: output.get(key) for key in (
+                "url", "kind", "name", "natural_w", "natural_h", "width", "height",
+                "raw_url", "corrected_url", "color_preservation", "trace_id",
+            ) if output.get(key) not in (None, "", [], {})}
+            if keep.get("url"):
+                outputs.append(keep)
+    compact = {
+        "id": entry.get("id"), "createdAt": entry.get("createdAt"), "status": entry.get("status"),
+        "platform": entry.get("platform"), "nodeId": entry.get("nodeId"), "nodeType": entry.get("nodeType"),
+        "model": entry.get("model"), "request": compact_request,
+        "prompt": str(entry.get("prompt") or "")[:600], "outputs": outputs,
+        "runMs": entry.get("runMs"), "error": str(entry.get("error") or "")[:1200],
+    }
+    return sanitize_log_value(compact)
+
+
 @app.put("/api/canvases/{canvas_id}")
 async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
     canvas = load_canvas(canvas_id)
@@ -15910,7 +16374,7 @@ async def update_canvas(canvas_id: str, payload: CanvasSaveRequest):
         canvas["viewport"] = payload.viewport
     else:
         canvas["viewport"] = canvas.get("viewport") or {"x": 0, "y": 0, "scale": 1}
-    canvas["logs"] = payload.logs[-500:]
+    canvas["logs"] = [compact_canvas_log_entry(entry) for entry in payload.logs[:100] if isinstance(entry, dict)]
     canvas["settings"] = payload.settings or {}
     save_canvas(canvas)
     await manager.broadcast_canvas_updated(canvas_id, int(canvas.get("updated_at") or now_ms()), payload.client_id)
