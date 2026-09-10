@@ -6,6 +6,7 @@
 | --- | --- | --- | --- | --- | --- |
 | [IC-20260909-00](2026/2026-09-09-github-baseline-and-upload.md) | 2026-09-09 | 已完成 | 初始版 GitHub 存档、Deploy Key 和安全上传 Skill | `25d83e13fb5f6fc344cf3573566d0171b268e94c` | Git, GitHub, baseline, tag, Deploy Key, GCM, SSH 443, upload skill |
 | [IC-20260909-01](2026/2026-09-09-nanobanana2-color-api-logging.md) | 2026-09-09 | 已发布 | Nano Banana 2 颜色保护、详细 API Trace、内存和终端日志优化 | `0dbf2e3e2744d25deb8b08971b504387393aa507` | 发粉, gemini-3.1-flash-image, colorfix, SQLite, Trace ID, API 详情, 500MB, 脱敏, 轮询降噪 |
+| [IC-20260910-00](2026/2026-09-10-maintenance-ledger-and-skill.md) | 2026-09-10 | 已验证 | 持久维护制度、历史补录与 Infinite Canvas 维护 Skill | `c5e48696cc1628febe168418267efd884bf4f3b9` | AGENTS.md, change record, ADR, changelog, context window, maintenance skill, dirty worktree |
 
 ## 编号规则
 
