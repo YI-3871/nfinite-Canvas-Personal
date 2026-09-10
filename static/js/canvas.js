@@ -9975,7 +9975,7 @@ async function runRhModelNode(node, opts={}){
             let outputs = [];
             for(const task of taskInfos){
                 const result = await waitCanvasImageTaskResult(task.task_id, {cascadeTargetId});
-                outputs.push(...resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || [])));
+                outputs.push(...resultMediaUrls(result));
                 run.request = requestMetaFromResult(result);
             }
             if(!outputs.length) throw new Error(tr('canvas.generationFailed'));
@@ -10492,7 +10492,7 @@ async function runGenerator(genId, opts={}){
             let outputs = [];
             for(const task of taskInfos){
                 const result = await waitCanvasImageTaskResult(task.task_id, {cascadeTargetId});
-                outputs.push(...resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || [])));
+                outputs.push(...resultMediaUrls(result));
                 run.request = requestMetaFromResult(result);
             }
             if(!outputs.length) throw new Error(tr('canvas.generationFailed'));
@@ -10585,7 +10585,7 @@ async function runGeneratorLegacy(genId, opts={}){
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify(payload)
         }).then(async r => { if(!r.ok) throw new Error(await responseErrorMessage(r, tr('canvas.generationFailed'))); return r.json(); })));
-        const images = results.flatMap(result => resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || [])));
+        const images = results.flatMap(result => resultMediaUrls(result));
         const metas = collectRunMetas(out, pendingIds);
         run.request = results[0] ? requestMetaFromResult(results[0]) : {};
         if(out) out._pending = (out._pending||[]).filter(p => !pendingIds.includes(p.id));
@@ -10739,6 +10739,7 @@ function resultMediaUrls(result){
             ['url','path','src','uri','output','output_url','outputUrl','video','video_url','videoUrl','mp4_url','mp4Url','download_url','downloadUrl','preview_url','previewUrl'].forEach(key => add(value[key]));
         }
     };
+    add(result);
     ['image_items','media_items','items','outputs','videos','audios','texts','files','images','urls','data','result','output','url'].forEach(key => add(result?.[key]));
     const seen = new Set();
     return urls.map(item => {
@@ -12378,7 +12379,7 @@ function providerIdForPending(pending){
 }
 function completeRecoverPendingOutput(out, pending, result){
     if(!out || !pending || !result) return;
-    const images = resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || []));
+    const images = resultMediaUrls(result);
     if(!images.length) return;
     const meta = {
         runMs: nowMs() - Number(pending.startedAt || nowMs()),
@@ -12502,7 +12503,7 @@ function completeCanvasImageTask(taskId, result){
         run: pending.run || {},
     };
     meta.run.request = requestMetaFromResult(result);
-    const images = resultMediaUrls(result.image_items?.length ? result.image_items : (result.images || []));
+    const images = resultMediaUrls(result);
     out._pending = (out._pending || []).filter(p => p.id !== pending.id);
     appendOutputImages(out, images, meta.run?.refs?.[0], [meta]);
     const gen = nodes.find(n => n.id === meta.run?.node?.id);
