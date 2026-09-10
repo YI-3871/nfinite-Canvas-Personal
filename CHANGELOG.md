@@ -8,6 +8,14 @@
 - 补录 2026-09-09 的初始 GitHub 存档、认证故障、Nano Banana 2 颜色保护和详细 API Trace 实施证据。
 - 在本机 Codex Skills 目录建立 `infinite-canvas-maintenance`，后续修改与故障排查统一使用持久记录流程。
 
+## 2026.09.10
+
+### Fixed
+
+- 修复传统画布 API 图像任务成功后 OUTPUT 节点仍为空的问题。
+- 保留颜色保护结果中的原图地址、校正图地址、Trace ID 和颜色诊断元数据。
+- 增加传统画布结果数组解析与 OUTPUT 写入回归测试。
+
 ## 2026.09.09
 
 ### Added
