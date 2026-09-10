@@ -13373,7 +13373,6 @@ async def build_online_image_result(payload: OnlineImageRequest):
     color_mode = str(payload.color_preservation or "off").strip().lower()
     if color_mode not in {"off", "auto", "strict"}:
         color_mode = "off"
-    color_supported = str(model or "").strip().lower().startswith("gemini-3.1-flash-image")
     preferred_reference_roles = {"base", "original", "source", "person", "input"}
     color_reference_url = str(payload.color_reference_url or "").strip()
     if not color_reference_url:
@@ -13406,8 +13405,6 @@ async def build_online_image_result(payload: OnlineImageRequest):
             output_url = raw_url
             if color_mode == "off":
                 passthrough_reason = "color preservation is off"
-            elif not color_supported:
-                passthrough_reason = "color preservation is limited to Nano Banana 2"
             else:
                 passthrough_reason = "color reference is unavailable"
             public_diagnostics = {
@@ -13415,7 +13412,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
                 "strategy": "adaptive_hybrid_d",
                 "requested_mode": color_mode,
                 "task_mode": task_mode,
-                "supported_model": color_supported,
+                "supported_model": True,
                 "status": "passthrough",
                 "method": "none",
                 "confidence": 0.0,
@@ -13426,7 +13423,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
             }
             raw_path = output_file_from_url(raw_url)
             reference_path = output_file_from_url(color_reference_url)
-            if color_supported and color_mode != "off" and raw_path and reference_path:
+            if color_mode != "off" and raw_path and reference_path:
                 stem, extension = os.path.splitext(os.path.basename(raw_path))
                 extension = extension.lower() if extension.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
                 corrected_filename = f"{stem}_colorfix{extension}"
@@ -13434,7 +13431,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
                 try:
                     if trace_id:
                         TASK_LOG_STORE.event(
-                            trace_id, "color_protection", "正在执行 Nano Banana 2 颜色保护",
+                            trace_id, "color_protection", "正在执行 API 生成颜色保护",
                             data={"mode": color_mode, "task_mode": task_mode, "reference_url": color_reference_url, "raw_url": raw_url},
                         )
                     diagnostics = await asyncio.to_thread(
@@ -13465,7 +13462,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
                             fields={"color": public_diagnostics},
                         )
                 except Exception as exc:
-                    logging.exception("Nano Banana 2 color preservation failed safely")
+                    logging.exception("API image color preservation failed safely")
                     public_diagnostics.update({
                         "status": "passthrough",
                         "method": "none",
@@ -13978,25 +13975,24 @@ def build_image_param_fields(engine: str, provider: dict, model: str):
             ],
             "default": "auto",
         })
-        if str(model or "").strip().lower().startswith("gemini-3.1-flash-image"):
-            fields.append({
-                "key": "task_mode", "type": "select", "label": "任务类型", "control": "chips",
-                "options": [
-                    {"value": "outfit_swap", "label": "换装"},
-                    {"value": "pose_change", "label": "换姿势"},
-                    {"value": "scene_change", "label": "场景/光线"},
-                ],
-                "default": "outfit_swap",
-            })
-            fields.append({
-                "key": "color_preservation", "type": "select", "label": "颜色保护", "control": "chips",
-                "options": [
-                    {"value": "off", "label": "关闭"},
-                    {"value": "auto", "label": "自动"},
-                    {"value": "strict", "label": "严格"},
-                ],
-                "default": "off",
-            })
+        fields.append({
+            "key": "task_mode", "type": "select", "label": "任务类型", "control": "chips",
+            "options": [
+                {"value": "outfit_swap", "label": "换装"},
+                {"value": "pose_change", "label": "换姿势"},
+                {"value": "scene_change", "label": "场景/光线"},
+            ],
+            "default": "outfit_swap",
+        })
+        fields.append({
+            "key": "color_preservation", "type": "select", "label": "颜色保护", "control": "chips",
+            "options": [
+                {"value": "off", "label": "关闭"},
+                {"value": "auto", "label": "自动"},
+                {"value": "strict", "label": "严格"},
+            ],
+            "default": "off",
+        })
     fields.append(count_field)
     fields.append(refs_field)
     return fields

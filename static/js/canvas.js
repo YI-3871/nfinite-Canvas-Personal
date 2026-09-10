@@ -8242,13 +8242,13 @@ function renderGeneratorBody(node){
                     </div>
                 </div>
             </div>
-            <div class="gen-settings-row color-preservation-row" style="display:none">
+            <div class="gen-settings-row color-preservation-row">
                 <select class="select-lite task-mode-select" title="任务类型">
                     <option value="outfit_swap">换装</option>
                     <option value="pose_change">换姿势</option>
                     <option value="scene_change">场景/光线</option>
                 </select>
-                <select class="select-lite color-preservation-select" title="Nano Banana 2 颜色保护">
+                <select class="select-lite color-preservation-select" title="API 生成颜色保护">
                     <option value="off">颜色保护：关闭</option>
                     <option value="auto">颜色保护：自动</option>
                     <option value="strict">颜色保护：严格</option>
@@ -8314,7 +8314,6 @@ function renderGeneratorBody(node){
     const qualitySelect = wrap.querySelector('.quality-select');
     const taskModeSelect = wrap.querySelector('.task-mode-select');
     const colorPreservationSelect = wrap.querySelector('.color-preservation-select');
-    const colorPreservationRow = wrap.querySelector('.color-preservation-row');
     const customRatioRow = wrap.querySelector('.custom-ratio-row');
     const customSizeRow = wrap.querySelector('.custom-size-row');
     const customRatioWInput = wrap.querySelector('.custom-ratio-w-input');
@@ -8331,7 +8330,6 @@ function renderGeneratorBody(node){
         node.colorPreservation = ['off','auto','strict'].includes(node.colorPreservation) ? node.colorPreservation : 'off';
         taskModeSelect.value = node.taskMode;
         colorPreservationSelect.value = node.colorPreservation;
-        colorPreservationRow.style.display = String(resolveImageModel(node.model) || '').toLowerCase().startsWith('gemini-3.1-flash-image') ? 'flex' : 'none';
     };
     const hydrateCustomParts = () => {
         if((!node.customRatioWidth || !node.customRatioHeight) && node.customRatio) {

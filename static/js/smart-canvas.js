@@ -2763,8 +2763,8 @@ function renderApiParams(){
         ${renderModelControl(models)}
         ${renderSizePickerControl('', true)}
         ${renderQualityControl()}
-        ${isNanoBanana2Model(settings.model) ? renderTaskModeControl() : ''}
-        ${isNanoBanana2Model(settings.model) ? renderColorPreservationControl() : ''}
+        ${renderTaskModeControl()}
+        ${renderColorPreservationControl()}
         ${renderCountVisualControl()}
     `;
 }
@@ -3280,9 +3280,6 @@ function renderQualityControl(){
         </div>
     </div>`;
 }
-function isNanoBanana2Model(model){
-    return String(model || '').trim().toLowerCase().startsWith('gemini-3.1-flash-image');
-}
 function renderTaskModeControl(){
     const value = ['outfit_swap','pose_change','scene_change'].includes(settings.taskMode) ? settings.taskMode : 'outfit_swap';
     const labels = {outfit_swap:'换装', pose_change:'换姿势', scene_change:'场景/光线'};
@@ -3302,7 +3299,7 @@ function renderColorPreservationControl(){
     return `<div class="smart-control color-preservation-control">
         <button class="smart-pill" type="button"><i data-lucide="palette"></i><span>${escapeHtml(labels[value])}</span></button>
         <div class="smart-popover compact-popover">
-            <div class="smart-popover-title">Nano Banana 2 颜色保护</div>
+            <div class="smart-popover-title">API 生成颜色保护</div>
             <div class="model-list">
                 ${Object.entries(labels).map(([key, label]) => `<button type="button" class="direct-option ${key === value ? 'active' : ''}" data-smart-param="colorPreservation" data-smart-value="${key}"><span>${escapeHtml(label)}</span></button>`).join('')}
             </div>
