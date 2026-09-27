@@ -4,6 +4,7 @@
 
 | ID | 日期 | 状态 | 主题 | 实施提交 | 关键词 |
 | --- | --- | --- | --- | --- | --- |
+| [IC-20260927-01](2026/2026-09-27-personal-repository-migration.md) | 2026-09-27 | 自动验证通过 | 个人仓库署名迁移、README 重写、赞赏与推广清理 | `cf2e5de4458eb08b125239889ba2a4ca2db8a844` | YI-3871, README, LICENSE, 赞赏, GitHub, personal branding, referral, Nano Banana 2 |
 | [IC-20260927-00](2026/2026-09-27-sidebar-personal-build.md) | 2026-09-27 | 自动测试通过，待界面验收 | 主侧栏宣传清理与原项目更新入口关闭 | `c8e5356c23134eb2a439672f9a50d4e6d4e3a6c7` | sidebar, 项目主页, 社媒, 作者署名, 一键更新, 本地版本, 新手维护 |
 | [IC-20260909-00](2026/2026-09-09-github-baseline-and-upload.md) | 2026-09-09 | 已完成 | 初始版 GitHub 存档、Deploy Key 和安全上传 Skill | `25d83e13fb5f6fc344cf3573566d0171b268e94c` | Git, GitHub, baseline, tag, Deploy Key, GCM, SSH 443, upload skill |
 | [IC-20260909-01](2026/2026-09-09-nanobanana2-color-api-logging.md) | 2026-09-09 | 已发布 | Nano Banana 2 颜色保护、详细 API Trace、内存和终端日志优化 | `0dbf2e3e2744d25deb8b08971b504387393aa507` | 发粉, gemini-3.1-flash-image, colorfix, SQLite, Trace ID, API 详情, 500MB, 脱敏, 轮询降噪 |
