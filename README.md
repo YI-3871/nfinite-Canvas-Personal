@@ -1,11 +1,10 @@
 # Infinite-Canvas
 
+## 个人开发版与项目来源
 
-----
-
-【新增了version文件，我每次更新都会更新version的版本号，如果你下载version文件，打开项目后，导航栏的GitHub按键就会提示新版本，如果不想查看更新提示，就删除version文件】
-
-【A version file has been added. I update the version number with each update. If you download the version file, the GitHub button in the navigation bar will indicate the new version after opening the project. If you don't want to see update notifications, delete the version file.】
+- 本项目是个人使用的二次开发版本，基于 [wuli大雄（hero8152）的 Infinite-Canvas](https://github.com/hero8152/Infinite-Canvas)。保留原作者来源说明与 [LICENSE](LICENSE)，主侧栏不再显示作者推广和社媒入口。
+- 本地修改与验证在开发版完成，稳定初始包仅在用户确认后同步；见 [工作区说明](docs/WORKSPACE-STRATEGY.md)。
+- 页面底部仅显示本地版本号。已移除主页面的原项目更新入口、自动更新检查及相关调用，防止从这里覆盖个人改动。后端旧更新模块尚未移除，不要从旧页面或外部工具调用；升级由维护者核对代码后手动完成。
 
 ----
 
