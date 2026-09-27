@@ -1,5 +1,7 @@
 # Infinite Canvas 本地素材导入 Chrome 插件
 
+维护者：[YI-3871](https://github.com/YI-3871)。项目主页：[Infinite Canvas Personal](https://github.com/YI-3871/nfinite-Canvas-Personal)。
+
 用于扫描当前网页图片，批量导入到素材库管理里的「本地素材」。
 
 ## 安装

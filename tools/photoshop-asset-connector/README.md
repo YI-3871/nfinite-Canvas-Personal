@@ -1,4 +1,6 @@
-# 大雄画布资产库 · Photoshop 插件
+# YI 画布资产库 · Photoshop 插件
+
+维护者：[YI-3871](https://github.com/YI-3871)。项目主页：[Infinite Canvas Personal](https://github.com/YI-3871/nfinite-Canvas-Personal)。
 
 一个 Adobe Photoshop UXP 面板插件，通过局域网地址连接 Infinite Canvas 后端，双向打通 PS 与「资产库」：
 
@@ -11,7 +13,7 @@
 ## 用法
 
 1. 启动 Infinite Canvas 后端（`启动服务.bat` / `python main.py`）。
-2. 在 Photoshop 里打开「大雄资产库」面板。
+2. 在 Photoshop 里打开「YI 画布工具」面板。
 3. 顶部填入服务地址：
    - 本机：`127.0.0.1:8767`（按你的实际端口）
    - 局域网：跑后端那台电脑的 `IP:端口`，例如 `192.168.1.10:3000`
@@ -33,7 +35,7 @@
    tools/photoshop-asset-connector/manifest.json
    ```
 
-4. 点 `Load`，在 PS 的「增效工具」菜单里打开「大雄资产库」。
+4. 点 `Load`，在 PS 的「增效工具」菜单里打开「YI 画布工具」。
 
 ## 后端接口契约
 

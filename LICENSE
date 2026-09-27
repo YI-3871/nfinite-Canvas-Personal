@@ -1,11 +1,22 @@
-禁止商业用途
-Commercial use is prohibited.
+Infinite Canvas Personal 使用许可
+维护者与授权联系：YI-3871
+项目地址：https://github.com/YI-3871/nfinite-Canvas-Personal
 
+允许个人和公司使用本软件。
+禁止未经授权将本软件修改、封装成商业产品；商业使用须另行取得授权。
+基于本项目代码二次开发的软件必须保持开源，并注明本项目及 YI-3871。
 
-* 可以自己使用和公司使用，禁止用于任何形式的修改封装成商业产品，商用须取得授权。
+项目中包含的第三方组件继续遵循其各自的许可证；本文件不替换这些组件的许可声明。
 
-* 根据代码二次开发的软件必须保持开源并注明来源作者
+Infinite Canvas Personal — Usage License
+Maintainer and licensing contact: YI-3871
+Project: https://github.com/YI-3871/nfinite-Canvas-Personal
 
-* This software is for personal and company use only, but is prohibited from being modified or packaged into commercial products in any way. Commercial use requires authorization.
+This software is for personal and company use.
+Modification or packaging into commercial products without authorization is prohibited.
+Commercial use requires separate authorization.
+Software developed based on this project's code must remain open source and credit
+Infinite Canvas Personal and YI-3871.
 
-* Software developed based on this code must remain open source and the original author must be credited.
+Third-party components remain subject to their respective licenses. This document
+does not replace those components' license notices.

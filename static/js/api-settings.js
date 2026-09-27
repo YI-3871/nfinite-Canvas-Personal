@@ -80,9 +80,9 @@ const MS_BUILTIN_IMAGE_MODELS = [
 const MS_DEFAULT_BASE_URL = 'https://api-inference.modelscope.cn/v1';
 const RH_DEFAULT_BASE_URL = 'https://www.runninghub.cn';
 const LINGJING_DEFAULT_BASE_URL = 'https://apistudio.vip';
-const LINGJING_REGISTER_URL = 'https://apistudio.vip/register?aff=g1CT';
+const LINGJING_REGISTER_URL = 'https://apistudio.vip/register';
 const VIP_GPT_DEFAULT_BASE_URL = 'https://www.vip-gpt.net';
-const VIP_GPT_REGISTER_URL = 'https://www.vip-gpt.net/vip-gpt/register?aff=YGMS7BDKNY5Y';
+const VIP_GPT_REGISTER_URL = 'https://www.vip-gpt.net/vip-gpt/register';
 const EXAMPLE_BASE_URL = 'https://api.example.com/v1';
 const JIMENG_DEFAULT_IMAGE_MODELS = ['5.0', '4.6', '4.5', '4.1', '4.0', '3.1', '3.0'];
 const JIMENG_DEFAULT_VIDEO_MODELS = ['seedance2.0fast_vip', 'seedance2.0_vip'];
@@ -113,12 +113,12 @@ const ONBOARDING_GUIDES = {
         descKey:'api.rhOnboardingDesc',
         primaryLabelKey:'api.rhGetKeyCn',
         secondaryLabelKey:'api.rhGetKeyGlobal',
-        primaryUrl:'https://www.runninghub.cn/enterprise-api/consumerApi?inviteCode=rh-v1331',
-        secondaryUrl:'https://www.runninghub.ai/enterprise-api/consumerApi?inviteCode=rh-v1331',
+        primaryUrl:'https://www.runninghub.cn/enterprise-api/consumerApi',
+        secondaryUrl:'https://www.runninghub.ai/enterprise-api/consumerApi',
         walletPrimaryLabelKey:'api.rhGetWalletKeyCn',
         walletSecondaryLabelKey:'api.rhGetWalletKeyGlobal',
-        walletPrimaryUrl:'https://www.runninghub.cn/enterprise-api/sharedApi?inviteCode=rh-v1331',
-        walletSecondaryUrl:'https://www.runninghub.ai/enterprise-api/sharedApi?inviteCode=rh-v1331'
+        walletPrimaryUrl:'https://www.runninghub.cn/enterprise-api/sharedApi',
+        walletSecondaryUrl:'https://www.runninghub.ai/enterprise-api/sharedApi'
     },
     lingjing:{
         titleKey:'api.lingjingOnboardingTitle',
@@ -161,7 +161,7 @@ const RECOMMENDED_APIS = [
         // 异步协议 + 异步生图模式：提交 /v1/videos、轮询 /v1/videos/{id}，本地参考图走 multipart 直传
         protocol:'apimart',
         image_request_mode:'openai-video-proxy',
-        register_url:'https://new.exellome.online/register?aff=r2dZ',
+        register_url:'https://new.exellome.online/register',
         tagKeys:['GPT-Image2','Nano-Banana'],
         icons:['IMG'],
         summaryKey:'api.recommendExellomeSummary',
@@ -180,7 +180,7 @@ const RECOMMENDED_APIS = [
         protocol:'openai',
         // FHL 生图走 OpenAI Responses / image_generation，避免 edits 长任务返回半截 keepalive。
         image_request_mode:'openai-responses',
-        register_url:'https://www.fhl.mom/register?aff=86L574B4T2N9',
+        register_url:'https://www.fhl.mom/register',
         tagKeys:['Codex','Claude','api.tagGptImage2'],
         icons:['CODEX','GPT','IMG'],
         summaryKey:'api.recommendFhlSummary',
@@ -221,8 +221,8 @@ const RECOMMENDED_APIS = [
         category:'allround',
         base_url:'https://api.apimart.ai',
         protocol:'apimart',
-        register_url:'https://apimart.ai/zh/register?aff=1uyAbb',
-        register_url_cn:'https://apib.ai/register?aff=1uyAbb',
+        register_url:'https://apimart.ai/zh/register',
+        register_url_cn:'https://apib.ai/register',
         tagKeys:['api.tagImageModels','api.tagVideoModels','api.tagLlmModels','api.tagSeedance'],
         icons:['IMG','VID','LLM'],
         summaryKey:'api.recommendApimartSummary',
@@ -238,7 +238,7 @@ const RECOMMENDED_APIS = [
         tagKeys:['api.tagImageModels','api.tagVideoModels','api.tagLlmModels'],
         icons:['IMG','VID','LLM'],
         summaryKey:'api.recommendLingjingSummary',
-        advantages:['签到送积分', '六折专属优惠', '图像/视频/LLM 全覆盖'],
+        advantages:['签到送积分', 'OpenAI 兼容接入', '图像/视频/LLM 全覆盖'],
         // 添加平台时预填的默认模型列表（含逐模型协议覆盖）
         image_models:['gpt-image-2', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'],
         chat_models:['gpt-5.5'],
@@ -2280,14 +2280,6 @@ function renderRecommendApi(){
         </div>
         <div class="recommend-api-body recommend-inline-body">${html}</div>
         <div class="recommend-note">${escapeHtml(tr('api.recommendApiNote'))}</div>
-        <div class="recommend-note recommend-seedance-private-note">
-            <span class="recommend-seedance-private-icon"><i data-lucide="video" class="w-3.5 h-3.5"></i></span>
-            <span class="recommend-seedance-private-text">${escapeHtml(tr('api.recommendSeedancePrivateNote'))}</span>
-            <a class="recommend-seedance-private-link" href="https://space.bilibili.com/78652351" target="_blank" rel="noopener noreferrer">
-                <i data-lucide="send" class="w-3.5 h-3.5"></i>
-                <span>${escapeHtml(tr('api.recommendSeedancePrivateAction'))}</span>
-            </a>
-        </div>
     `;
     refreshIcons();
 }
